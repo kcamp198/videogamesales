@@ -1,9 +1,3 @@
-setwd("C:/Users/kcamp/AppData/Local/R/win-library/4.2")
-
-remove.packages("caret")
-
-install.packages("vctrs")
-
 ##### 1.1 Overview #####
 
 ## Set knitr options
@@ -57,8 +51,6 @@ removed <- anti_join(temp, validation)
 vg <- rbind(vg, removed)
 
 rm(data, temp, test_index, removed)
-
-vg %>% filter(User_Score > 0) %>% nrow()
 
 ## View first ten rows of vg data
 vg %>% slice(1:10) %>% knitr::kable(caption = "Table 1.1. First ten rows of vg dataset",
@@ -114,7 +106,6 @@ describe(vg$User_Score, fast = TRUE) %>%
 u_s_sum <- vg %>% filter(User_Score != mean(User_Score)) %>% group_by(User_Score) %>%
   summarize(count = n())
 
-max(u_s_sum$count)
 which.max(u_s_sum$count)
 u_s_sum[76,]
 
@@ -190,6 +181,8 @@ ggplot(year_sum, aes(Year_of_Release, n)) +
        y = "Count") + 
   theme(axis.text.x=element_text(angle = 80, hjust = 1),
         plot.background = element_rect(color = "black", fill=NA, size=0.25))
+
+year_sum
 
 ## Plot the average user score by year of release
 ggplot(year_sum, aes(as.numeric(Year_of_Release), Average_user_score)) +
@@ -430,7 +423,7 @@ validation <- validation %>%
   mutate(predicted_rating = mu_user + b_c + b_p + b_s + b_pub)
 
 ## Create and display the final RMSE table
-data_frame(method = "Critic-average, platform, year, sales, publisher model",
+data_frame(method = "Critic-average, platform, sales, publisher model",
            RMSE = RMSE(validation$User_Score, validation$predicted_rating)) %>%
   knitr::kable(caption = "Table 3.8. Final RMSE evaluation",
                row.names = FALSE,

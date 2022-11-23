@@ -1,5 +1,5 @@
 ---
-title: "Developing and Evaluating a Video Game Marketing Model"
+title: "Developing and Evaluating a Video Game Rating Model"
 author: "Kevin Camp"
 date: "`r Sys.Date()`"
 output: pdf_document
@@ -14,18 +14,16 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # 1.0 Introduction  
 
-This report satisfies the guidelines for the MovieLens project in the Data Science Capstone course. The  project goal is analyzing a dataset of movie ratings by a collection of users in order to create a recommendation system. The recommendation system will predict ratings by user for movies which that user has not yet rated. The dataset is large; that presents a challenge, in that large datasets are difficult to manage. It also presents an opportunity, in that every data point can be used as a predictor for each missing value in the overall set. The aim of the project is to achieve that using machine learning methods.
+This report satisfies the guidelines for the Choose Your Own project in the Data Science Capstone course. My project goal is to analyzing a dataset of video game ratings by users in order to create a recommendation system. The recommendation system will predict ratings by user for games that are missing user ratings in the dataset. The dataset is large; that presents a challenge, in that large datasets are difficult to manage. It also presents an opportunity, in that every data point can be used as a predictor for each missing value in the overall set. The aim of the project is to achieve that using machine learning methods.
 
 # 1.1 Overview  
 
-The project uses a modified version of the MovieLens data with two sets. One set---"edx"---is used to train the model, and contains more than 9 million rows of user--movie ratings. Each row provides columns detailing a user identifier (userId); movie identifier (movieId); movie rating given by the user (rating); time in seconds since the Unix Epoch on midnight, January 1st, 1970 (timestamp); name of the rated movie (title); and genre or genres describing the rated movie (genres). The other set---"validation"---is similar in content to edx, and is used as the final hold-out test set. Table 1.1 presents a selection of rows from edx.  
+The project uses data from this [repository](https://www.kaggle.com/datasets/rush4ratio/video-game-sales-with-ratings?resource=download) split into two sets. One set---"vg"---is used to train the model, and contains more than 15 thousand rows of video games. Each row provides columns detailing the name of the game (Name); the platform on which the game was released (Platform); the year of release (Year_of_Release); publisher (Publisher); five columns of sales data, including North America, European Union, Japan, Other, and Global; critic ratings (Critic_Score); critic rating count (Critic_Count); user ratings (User_Score); user rating counts (User_Count); developer (Developer); and rating (Rating). The other set---"validation"---is similar in content to vg, and is used as the final hold-out test set to see how well the model performs. Table 1.1 presents a selection of rows from vg.  
 
 \captionsetup[table]{labelformat=empty}
 
-```{r create datasets and view edx top, message=FALSE, warning=FALSE, echo=FALSE}
-## Create edx set, validation set (final hold-out test set), set more options, install packages
-
-## Note: this process could take a couple of minutes
+```{r create datasets and view vg top, message=FALSE, warning=FALSE, echo=FALSE}
+## Create vg set, validation set (final hold-out test set), set more options, install packages
 
 options(repos = list(CRAN="http://cran.rstudio.com/"))
 
@@ -49,137 +47,145 @@ library(gridExtra)
 library(jtools)
 library(huxtable)
 
-# MovieLens 10M dataset:
-# https://grouplens.org/datasets/movielens/10m/
-# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+## Original data from kaggle.com user rush4ratio
+## Data includes video game sales from Vgchartz and ratings from Metacritic
+## Data now hosted on my dropbox
 
-download.file("https://www.dropbox.com/s/nspymeso8rmmak1/edx.rds?dl=1", "edx.rds", mode="wb")
+download.file("https://www.dropbox.com/s/pkkuwg8et5qdj70/Video_Games_Sales_as_at_22_Dec_2016.csv?dl=1","vg.csv", mode = "wb")
 
-download.file("https://www.dropbox.com/s/x0s477b0kzxpl6i/validation.rds?dl=1", "validation.rds", mode="wb")
+data = read.csv("vg.csv")
 
-edx = readRDS("edx.rds")
+## Validation set will be 10% of vg data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = data$User_Score, times = 1, p = 0.1, list = FALSE)
+vg <- data[-test_index,]
+temp <- data[test_index,]
 
-validation = readRDS("validation.rds")
+## Make sure Name and Platform in validation set are also in vgs set
+validation <- temp %>% 
+  semi_join(vg, by = "Name") %>%
+  semi_join(vg, by = "Platform")
 
-## View first ten rows
-edx %>% slice(1:10) %>% knitr::kable(caption = "Table 1.1. First ten rows of edx dataset",
+## Add rows removed from validation set back into vg set
+removed <- anti_join(temp, validation)
+vg <- rbind(vg, removed)
+
+rm(data, temp, test_index, removed)
+
+## View first ten rows of vg data
+vg %>% slice(1:10) %>% knitr::kable(caption = "Table 1.1. First ten rows of vg dataset",
                                      row.names = FALSE) %>%
   kable_styling(font_size = 10, position = "center",
                 latex_options = c("scale_down","HOLD_position"))
 ```
 
-Additional summary detail on the edx set is included in table 1.2. The table shows the large number of users, movies, and movie genres represented in the data.  
+In table 1.2, the summary statistics on the vg set reveal almost 12 thousand unique games. This number is less than the total rows because a number of games are released on multiple platforms (*e.g*, Xbox, Playstation).   
 
-```{r edx summary table, message=FALSE, warning=FALSE, echo=FALSE}
-## Create edx summary table
-edx_summary <- data.frame(Rows = nrow(edx),
-                          Columns = ncol(edx),
-                          "Unique users" = n_distinct(edx$userId),
-                          "Unique movies" = n_distinct(edx$movieId),
-                          "Average rating" = round(mean(edx$rating),2),
-                          "Number of genres" = n_distinct(edx$genres),
-                          "Date of first rating" = 
-                            as.Date(as.POSIXct(min(edx$timestamp), 
-                                               origin = "1970-01-01")),
-                          "Date of last rating" = 
-                            as.Date(as.POSIXct(max(edx$timestamp),
-                                               origin = "1970-01-01")),
+```{r vg summary table, message=FALSE, warning=FALSE, echo=FALSE}
+## Convert Critic_Score NAs to mean of Critic_Score in vg
+vg$Critic_Score[is.na(vg$Critic_Score)] <- mean(vg$Critic_Score, na.rm = T)
+
+## Make User_Score numeric
+vg <- transform(vg, User_Score = as.numeric(User_Score))
+
+## Convert User_Score NAs to mean of User_Score in vg
+vg$User_Score[is.na(vg$User_Score)] <- mean(vg$User_Score, na.rm = T)
+
+## Create vg summary table
+vg_summary <- data.frame(Rows = nrow(vg),
+                          Columns = ncol(vg),
+                          "Unique games" = n_distinct(vg$Name),
+                          "Unique platforms" = n_distinct(vg$Platform),
+                          "Average global sales" = round(mean(vg$Global_Sales),2),
+                          "Average critic score" = round(mean(vg$Critic_Score),2),
+                          "Average user score" = round(mean(vg$User_Score),2),
+                          "Number of genres" = n_distinct(vg$Genre),
                           check.names = FALSE)
 
-## Display the first six columns of the edx summary table
-edx_summary[,1:6] %>% 
-  knitr::kable(caption = "Table 1.2. Summary of edx set") %>%
+## Display the vg summary table
+vg_summary %>% 
+  knitr::kable(caption = "Table 1.2. Summary of vg set") %>%
   kable_styling(font_size = 10, position = "center",
-                latex_options = c("HOLD_position"))
+                latex_options = c("scale_down","HOLD_position"))
 ```
 
-Note the result from multiplying the unique users and unique movies values from table 1.2, 69,878 × 10,677 =  746,087,406, a number larger than the total row count for the edx set (9,000,055). This implies that in the edx data, each user did not rate each movie. It is then useful to view the edx dataset as a matrix, with users represented by rows and movies represented by columns. Figure 1.1 takes a random sample of 100 movies and 100 users and depicts user--movie combinations for which ratings exist with yellow shading. The machine learning algorithm developed in this project will allow us to use values in the entire matrix as predictors for each empty cell.  
+The vg data contains other useful pieces of information for creating a game recommendation algorithm. For example, the year a given game was released. The rating submission dates in the vg set range from 1980 to 2020.
 
-\begin{center}
-Figure 1.1. Matrix of a random sample of 100 users and 100 movies from edx
-\end{center}
+Another example is the genre information for each game. Most games in the vg set have one genre listed. In fact, only two entries the dataset---rated by 0 users/critics---have no genre (nor even a name) listed. These variables, along with the others previously mentioned, will be useful predictors in the model.   
 
-```{r matrix sparsity, results='hide', message=FALSE, warning=FALSE, echo=FALSE}
-## Visualize sparsity using a random sample of our matrix of users, movies
-install.packages("rafalib")
-users <- sample(unique(edx$userId), 100)
-rafalib::mypar()
-edx %>% filter(userId %in% users) %>% 
-  select(userId, movieId, rating) %>%
-  mutate(rating = 1) %>%
-  spread(movieId, rating) %>% select(sample(ncol(.), 100)) %>% 
-  as.matrix() %>% t(.) %>%
-  image(1:100, 1:100,. , xlab="Movies", ylab="Users")
-abline(h=0:100+0.5, v=0:100+0.5, col = "grey")
-```
-
-The edx data contains other useful pieces of information. For example, the timestamp column measures the timing of when users submitted ratings. The rating submission dates in the edx set range from 1995 to 2009, as illustrated in table 1.3.  
-
-```{r edx date range, message=FALSE, warning=FALSE, echo=FALSE}
-## Display the last two columns of the edx summary table
-edx_summary[,7:8] %>% 
-  knitr::kable(caption = "Table 1.3. Date range in edx set") %>%
+```{r vg no genre listed, message=FALSE, warning=FALSE, echo=FALSE}
+## Display rows in vg with no genre information
+vg %>%
+  filter(Genre == "") %>% 
+  knitr::kable(caption = "Table 1.3. Rows in vg lacking genre information",
+               row.names = FALSE) %>%
   kable_styling(font_size = 10, position = "center",
-                latex_options = c("HOLD_position"))
-```
-
-Another example is the genre information for each movie. Exploratory data analysis reveals at least one genre listed for the vast majority of movies recorded in the edx data. In fact, only one movie in the dataset---rated by 7 users---lacks a genre description as demonstrated in table 1.4. Referring back to table 1.1, we see that many movies have multiple genres listed. These variables, along with the others previously mentioned, will be useful predictors in the model.   
-
-```{r edx no genre listed, message=FALSE, warning=FALSE, echo=FALSE}
-## Display rows in edx with no genre information
-edx %>%
-  filter(genres == "(no genres listed)") %>% 
-  knitr::kable(caption = "Table 1.4. Rows in edx lacking genre information",
-                                     row.names = FALSE) %>%
-  kable_styling(font_size = 10, position = "center",
-                latex_options = c("HOLD_position"))
+                latex_options = c("scale_down","HOLD_position"))
 ```
 
 # 1.2 Executive summary  
 
-Through data science techniques, we can create a strong prediction model capable of recommending movies to individuals. This can be beneficial for providing entertainment suggestions to individuals. An important question is: how can we model this efficiently with a large dataset? Machine learning methods are capable of achieving this, and that is the strategy I pursue in this report.
+Through data science techniques, we can create a strong prediction model capable of recommending games to individuals. This can be beneficial for providing entertainment suggestions to individuals. An important question is: how can we model this efficiently with a large dataset? Machine learning methods are capable of achieving this, and that is the strategy I pursue in this report.
 
-My project makes use of a large dataset. In the sections that follow I discuss my methods, clean and organize my data, develop my model, and finally evaluate the predictions generated by the model. I find success in predicting movie ratings based on four variables present in the dataset. The result is a suitably low measure of difference between the predictions my model generates and the actual rating values in a tranche of the dataset.
+In the sections that follow I discuss my methods, clean and organize my data, develop my model, and finally evaluate the predictions generated by the model. I find success in predicting game ratings based on five variables present in the dataset. The result is a suitably low measure of difference between the predictions my model generates and the actual rating values in a tranche of the dataset.
 
 # 2.0 Methods and analysis
 
-For this project, my goal is to develop a movie recommendation model. This model will aim to accurately predict movie ratings in the final hold-out test set as if they were not known to me. The means of evaluating my success will be minimizing residual mean squared error (RMSE). This project has a defined target RMSE value of less than 0.8649. As such, my goal is to design a model using machine learning methods that achieves RMSE < 0.8649.  
+For this project, my goal is to develop a video game recommendation model. This model will aim to accurately predict game ratings in the final hold-out test set as if they were not known to me. The means of evaluating my success will be minimizing root mean squared error (RMSE). The RMSE is the standard deviation of the residuals, a common measurement used in statistics to evaluate accuracy of projections. This project has a defined target of reaching the lowest possible RMSE value given the available data.  
 
-The key dependent variable of interest for recommending movies to users is the rating. The rating measures how much a user enjoyed a given movie. In the edx data, ratings range from a minimum of 0.5 to a maximum of 5.0. The overall mean value for the collection of user--movie ratings in the dataset is 3.51, and the standard deviation is 1.06. Table 2.1 displays these summary statistics.  
+The key dependent variable of interest for recommending games is the user score. This rating measures how much a user enjoyed a given game. In the vg data, ratings range from a minimum of 0 to a maximum of 9.6. The overall mean value for the game ratings in the dataset is 7.14, and the standard deviation is 0.99. Table 2.1 displays the number of observations (n), mean, standard deviation (sd), minimum and maximum ratings, the range of the rating scale, and the standard error (se).  
 
 ```{r ratings summary statistics, message=FALSE, warning=FALSE, echo=FALSE}
-## Create and display summary table of ratings
-describe(edx$rating, fast = TRUE) %>%
+## Create and display summary table of user scores
+describe(vg$User_Score, fast = TRUE) %>%
   select(-vars) %>%
-  knitr::kable(caption = "Table 2.1. Summary statistics for ratings",
-                                     row.names = FALSE) %>%
+  knitr::kable(caption = "Table 2.1. Summary statistics for user scores",
+               row.names = FALSE) %>%
   kable_styling(font_size = 10, position = "center",
                 latex_options = c("HOLD_position"))
 ```
 
-Further exploring the data reveals additional patterns in user ratings. As shown in figure 2.1, we see that the most common rating is 4.0, and that whole integer values are more common in the data than values ending in a half star.  
+Further exploring the data reveals additional patterns in user ratings. As shown in figure 2.1, we see that the most common rating is 7.8. Additionally, the data appear to be left-skewed. A left-skewed distribution, as shown by the long left tail in figure 2.1, indicates that ratings concentrate on the right side of the tail, such that reviewers tend to give high ratings to games.
 
 \newpage
 
 \begin{center}
-Figure 2.1. Count by rating in edx
+Figure 2.1. Count by user score in vg
 \end{center}
 
-```{r ratings summed, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## Create a table with the sum of each user rating
-rating_sum <- edx %>% group_by(rating) %>%
+```{r scores summed, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
+## Create a table with the sum of each user score
+u_s_sum <- vg %>% filter(User_Score != mean(User_Score)) %>% group_by(User_Score) %>%
   summarize(count = n())
 
-## Plot the count by rating using the rating sum table
-rating_sum %>% mutate(rating = factor(rating)) %>%
-  ggplot(aes(rating, count)) +
+## Plot the count by user score using the user score sum table
+u_s_sum %>%
+  ggplot(aes(User_Score, count)) +
   geom_col(fill = "steel blue", color = "black") +
   theme_classic() +
   theme(plot.background = element_rect(color = "black", fill=NA, size=0.25)) + 
-  labs(x = "Rating", y = "Count")
+  labs(x = "User score", y = "Count")
 ```
 
-Accurate prediction of movie ratings for a given user provides justification for recommending movies to that user. In brief, if my model predicts a user will assign a rating of 0.5 to a given movie, I would not recommend the user watch the corresponding movie. The reverse is true if my model predicts a user will assign a rating of 5.0.  
+As shown in figure 2.2, most games have very few scores. Additionally, there does not appear to be any real trend in the data. Games with few ratings, have scores both low and high, and similarly, games with many ratings have both high and mediocre scores. 
+
+\begin{center}
+Figure 2.2. Count by user score in vg
+\end{center}
+
+```{r average and count scatter, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
+## Create and display scatterplot of average and number of user scores
+vg %>% 
+  ggplot(aes(User_Count, User_Score)) +
+  geom_point(color = "steel blue", alpha = 0.3) +
+  geom_smooth() +
+  theme_classic() +
+  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25)) +
+  labs(x = "Number of user scores",
+       y = "Average score")
+```
+
+Accurate prediction of game scores provides justification for recommending games. In brief, if my model predicts a game will receive a score of 1, I would not encourage someone using this recommendation system to play the game. The reverse is true if my model predicts a game will receive a score of 9.  
 
 # 2.1 Techniques and processes
 
@@ -192,488 +198,244 @@ My techniques and processes will include the following:
 
 ## 2.1.1 Data cleaning
 
-The timestamp in edx represents seconds since midnight Coordinated Universal Time (UTC) of January 1, 1970. My first data cleaning effort was converting this variable to a date, which is easier to interpret and analyze. Table 2.2 displays the first five rows of the updated edx set with timestamp converted to a date format in the "rating_time" column and an added column, "rating_year" listing only the year of each movie--user rating.  
+First, I update vg, multiplying user score by 10 to scale to the provided critic score. Therefore, the final range of user scores goes from 0 to 100. This first data cleaning effort ensures that the scores are comparable. Table 2.2 displays the first five rows of the updated vg set with scores converted. 
 
-```{r view updated edx top, message=FALSE, warning=FALSE, echo=FALSE}
+```{r view updated vg top, message=FALSE, warning=FALSE, echo=FALSE}
+## Update vg with user score multiplied by 10 to scale to critic score
+vg <- vg %>% 
+  mutate(User_Score = User_Score*10)
 
-## Update edx with timestamp converted to date format
-edx <- edx %>% 
-  mutate(rating_time = as.Date(as.POSIXct(timestamp, origin = "1970-01-01 00:00:00",tz = "GMT"))) %>% 
-  mutate(rating_year = year(rating_time)) %>%
-  select(-timestamp)
-
-## View first five rows of updated edx dataset
-edx %>% slice(1:5) %>% knitr::kable(caption = "Table 2.2. First five rows of updated edx dataset",
-                                     row.names = FALSE) %>%
-  kable_styling(font_size = 10, position = "center",
-                latex_options = c("scale_down","HOLD_position"))
-```
-
-Movie release years are included in edx, but they are attached to the end of the text of cells in the title column. This information is more useful as a standalone column. As a result, my second data cleaning effort is to separate the movie release dates into a new "release_year" column, displayed in table 2.3.  
-
-```{r view final edx top, message=FALSE, warning=FALSE, echo=FALSE}
-
-## Update edx to add release year
-edx <- edx %>%
-  mutate(release_year = as.integer(substr(title, str_length(title) - 4,
-                                          str_length(title) - 1)))
-
-## View first five rows of updated edx dataset
-edx %>% slice(1:5) %>% knitr::kable(caption = "Table 2.3. First five rows of edx dataset with release year",
-                                     row.names = FALSE) %>%
+## View first five rows of updated vg dataset
+vg %>% slice(1:5) %>% knitr::kable(caption = "Table 2.2. First five rows of updated vg dataset",
+                                    row.names = FALSE) %>%
   kable_styling(font_size = 10, position = "center",
                 latex_options = c("scale_down","HOLD_position"))
 ```
 
 ## 2.1.2 Data exploration and visualization
 
-As demonstrated in table 1.2, the edx set contains 10,677 unique movies. Exploring these data, we find some of the movies receive more ratings than others. Summary statistics on ratings per movie are shown in table 2.4. Rating counts per movie range from 1 to 31362. Though the average ratings per movie is substantially high at nearly 843, this belies a notably large distribution; viewing this distribution of ratings per movie in histogram form in figure 2.2, we observe more than 100 movies in edx only received 1 rating, while a number of movies received more than 10,000 ratings.   
+As demonstrated in table 1.2, the vg set contains 11,563 unique games. Summary statistics on ratings by critic are shown in table 2.3. The average critic score is 68.9, with a standard deviation of 9.6. Critics on average rated movies slightly lower than users, but with somewhat less spread.
 
-```{r summary of ratings by movie, message=FALSE, warning=FALSE, echo=FALSE}
-## Create and display summary table of ratings by movie
-edx %>%
-  dplyr::count(movieId) %>%
-  describe(fast = TRUE) %>%
+```{r summary of ratings by game, message=FALSE, warning=FALSE, echo=FALSE}
+## Create and display summary table of critic scores
+describe(vg$Critic_Score, fast = TRUE) %>%
   select(-vars) %>%
-  slice(2) %>%
-  knitr::kable(caption = "Table 2.4. Summary statistics for ratings",
-                                         row.names = FALSE) %>%
+  knitr::kable(caption = "Table 2.3. Summary statistics for critic scores",
+               row.names = FALSE) %>%
   kable_styling(font_size = 10, position = "center",
                 latex_options = c("HOLD_position"))
 ```
 
+Figure 2.3 shows the distribution of critic ratings per game. Similarly to user ratings, the ratings are left-skewed. This shows that, much like users, critics tend to give higher ratings to games.
+
 \begin{center}
-Figure 2.2. Distribution of ratings per movie
+Figure 2.3. Distribution of critic scores
 \end{center}
 
-```{r distribution of ratings per movie, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## Visualize the distribution of ratings per movie
-edx %>%
-dplyr::count(movieId) %>% 
-  ggplot(aes(n)) + 
-  geom_histogram(fill = "steel blue", color = "black") +
+```{r distribution of ratings per game, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
+## Create a table with the sum of each critic score
+c_s_sum <- vg %>% filter(Critic_Score != mean(Critic_Score)) %>% group_by(Critic_Score) %>%
+  summarize(count = n())
+
+## Plot the count by critic score using the critic score sum table
+c_s_sum %>%
+  ggplot(aes(Critic_Score, count)) +
+  geom_col(fill = "steel blue", color = "black") +
   theme_classic() +
   theme(plot.background = element_rect(color = "black", fill=NA, size=0.25)) + 
-  labs(x = "Number of ratings", y = "Count of unique movies") + 
-  scale_x_log10()
+  labs(x = "Critic score", y = "Count")
 ```
 
-A large number of movies with few ratings presents a challenge for prediction accuracy. This is further illustrated in figure 2.3, which plots movies' average ratings by number of ratings. There, we observe that movies with fewer ratings vary widely---they may be rated close to 0.5 on average, or close to 5.0. By contrast, variability narrows for movies with more ratings---they tend to be rated closer to 4.0, on average. The trendline in figure 2.3 also indicates that average rating increases as the number of ratings increases. These observations will prove useful in creating the prediction model.  
-
-\newpage
+There appears to be a correlation between the number of scores that a game receives from critics, and the average score received from critics (figure 2.4). Games that garner more attention from critics are perhaps more unique, interesting, or simply better games; if so, it is not surprising that there would be a positive relationship between the number of critic scores a game receives and the average score.
 
 \begin{center}
-Figure 2.3. Average movie ratings by number of movie ratings
+Figure 2.4. Average game ratings by critics
 \end{center}
 
 ```{r average ratings by number of ratings, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## Create quick summary table for scatterplot of average and number of ratings
-movie_sum <- edx %>% group_by(movieId) %>%
-  summarize(ratings = n(), 
-            mu = mean(rating),
-            sd = sd(rating))
-
-## Display scatterplot of average and number of ratings
-movie_sum %>% 
-  ggplot(aes(ratings, mu)) +
+## Create and display scatterplot of average and number of critic scores
+vg %>% 
+  ggplot(aes(Critic_Count, Critic_Score)) +
   geom_point(color = "steel blue", alpha = 0.3) +
   geom_smooth() +
-  geom_vline(aes(xintercept = mean(movie_sum$ratings)), color = "red") +
-  annotate("text", x = 2000, y = 5,
-           label = round(mean(movie_sum$ratings),0),
-           color = "red", size = 3) +
   theme_classic() +
   theme(plot.background = element_rect(color = "black", fill=NA, size=0.25)) +
-  labs(x = "Number of ratings per movie",
-       y = "Average rating per movie")
+  labs(x = "Number of critic scores",
+       y = "Average score")
 ```
 
-We can also investigate the distribution of average ratings by movie and compare it to the overall distribution of ratings. As we see in figure 2.4, the relative proportion of 5.0 ratings (seen in the right hand chart) greatly exceeds the number of movies that average a rating of 5.0 (seen in the left hand chart). This suggests user-to-user variability in rating behavior---for example, a given user could be especially inclined to give 5.0 ratings simply because they consider themselves a "positive person." On average however, this hypothetical effect would be abated.   
+We can also investigate the number of games by release year. As we see in figure 2.5, more games were released in the late 2000s. Very few games in the dataset were released in the 1980s, slowly increasing in the mid 1990s. The number of games released in a single year peaked in the years 2008 and 2009. The number of games released by year declined at that point, and was fairly stable from 2012 to 2016. 
 
 \begin{center}
-Figure 2.4. Average and overall ratings distributions
+Figure 2.5. Count of game releases by year
 \end{center}
 
 ```{r average and overall ratings distributions, fig.align = 'center', fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## Plot average rating distribution alongside overall rating distribution
-plot1 <- movie_sum %>% ggplot(aes(mu)) + 
-  geom_histogram(fill = "steel blue", color = "black",
-                 binwidth = 0.5) +
-  labs(title = "Distribution of movie average ratings",
-       x = "Rating",
-       y = "Count") + 
-  theme_classic() +
-  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25),
-        plot.title = element_text(hjust = 0.5, size = 10))
+## create quick summary table for plot of the number of user scores by year of release
+year_sum <- vg %>% filter(Year_of_Release != "N/A") %>% group_by(Year_of_Release) %>%
+  summarize(n = n(), Average_user_score = mean(User_Score))
 
-plot2 <- rating_sum %>% mutate(rating = factor(rating)) %>%
-  ggplot(aes(rating, count)) +
+## Display plot of number of user scores by year of release
+ggplot(year_sum, aes(Year_of_Release, n)) +
   geom_col(fill = "steel blue", color = "black") +
   theme_classic() +
-  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25),
-        plot.title = element_text(hjust = 0.5, size = 10)) + 
-  labs(title = "Distribution of movie ratings",
-       x = "Rating",
-       y = "Count")
-
-grid.arrange(plot1, plot2, ncol=2)
-```
-
-The 69,878 unique users in the edx data represent another variable worth examining. Exploratory analysis reveals that, just as ratings varied by movie, ratings vary by user as well. User rating summary statistics are presented in table 2.5. The lowest number of ratings submitted by a single user is 10, and the highest is 6,616. The average user submitted nearly 129 ratings, but the large standard deviation of roughly 195 indicates substantial spread in ratings across individuals. The right-skewed distribution of ratings by user depicted in histogram form in figure 2.5 indicates many users submitted a low-to-moderate number of ratings, while a few users submitted very many.  
-
-```{r summary of ratings by user, message=FALSE, warning=FALSE, echo=FALSE}
-## Create and display summary table of ratings by user
-edx %>%
-  dplyr::count(userId) %>%
-  describe(fast = TRUE) %>%
-  select(-vars) %>%
-  slice(2) %>%
-  knitr::kable(caption = "Table 2.5. Summary statistics for users",
-                                         row.names = FALSE) %>%
-  kable_styling(font_size = 10, position = "center",
-                latex_options = c("HOLD_position"))
-```
-
-\begin{center}
-Figure 2.5. Distribution of ratings per user
-\end{center}
-
-```{r distribution of ratings per user, fig.align = 'center', fig.width = 4, fig.height = 2.5, message=FALSE, warning=FALSE, echo=FALSE}
-## Visualize the distribution of ratings per user
-edx %>%
-dplyr::count(userId) %>% 
-  ggplot(aes(n)) + 
-  geom_histogram(fill = "steel blue", color = "black") +
-  theme_classic() +
-  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25)) + 
-  labs(x = "Number of ratings", y = "Count of unique users") + 
-  scale_x_log10()
-```
-
-As with ratings per movie, variability in ratings per user complicates making accurate predictions. Figure 2.6 shows a scatterplot of average ratings by number of movies rated per user. The figure illustrates that less-active users vary greatly in their rating behavior, on average. Users with few total ratings may give movies nearly perfect scores on average, or conversely very low scores. This variability shrinks as ratings per user increase; more-active users appear to rate movies close to a 3.0 on average. A trendline reveals that average ratings decrease slightly as the number of user--ratings advances.  
-
-\begin{center}
-Figure 2.6. Average user ratings by number of user ratings
-\end{center}
-
-```{r average ratings by number of user ratings, fig.align = 'center', fig.width = 4, fig.height = 2.5, message=FALSE, warning=FALSE, echo=FALSE}
-## Create quick user summary table for scatterplot of average and number of user-ratings
-user_sum <- edx %>% group_by(userId) %>%
-  summarize(user_ratings = n(), 
-            user_mu = mean(rating),
-            user_sd = sd(rating))
-
-## Display scatterplot of average and number of user-ratings
-user_sum %>% 
-  ggplot(aes(user_ratings, user_mu)) +
-  geom_point(color = "steel blue", alpha = 0.3) +
-  geom_smooth() +
-  geom_vline(aes(xintercept = mean(user_sum$user_ratings)), color = "red") +
-  annotate("text", x = 400, y = 5,
-           label = round(mean(user_sum$user_ratings),0),
-           color = "red", size = 3) +
-  theme_classic() +
-  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25)) +
-  labs(x = "Number of ratings per user",
-       y = "Average rating per user")
-```
-
-The distribution of average ratings by user differs from that of ratings overall. Figure 2.7 shows a modal value associated with lower ratings on the user--average (left hand) side. Another discrepancy is observed with 5.0 ratings---very few users average 5.0 for all movies they rated, yet the overall rating data contain many 5.0 ratings. These observations reinforce the expected conclusion that not all users---nor movies---are created equal.   
-
-\begin{center}
-Figure 2.7. User--average and overall ratings distributions
-\end{center}
-
-```{r user average and overall ratings distributions, fig.align = 'center', fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## Plot average rating distribution alongside overall rating distribution
-plot3 <- user_sum %>% ggplot(aes(user_mu)) + 
-  geom_histogram(fill = "steel blue", color = "black",
-                 binwidth = 0.5) +
-  labs(title = "Distribution of user-average ratings",
-       x = "Rating",
+  labs(x = "Year",
        y = "Count") + 
-  theme_classic() +
-  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25),
-        plot.title = element_text(hjust = 0.5, size = 10))
-
-plot4 <- rating_sum %>% mutate(rating = factor(rating)) %>%
-  ggplot(aes(rating, count)) +
-  geom_col(fill = "steel blue", color = "black") +
-  theme_classic() +
-  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25),
-        plot.title = element_text(hjust = 0.5, size = 10)) + 
-  labs(title = "Distribution of movie ratings",
-       x = "Rating",
-       y = "Count")
-
-grid.arrange(plot3, plot4, ncol=2)
+  theme(axis.text.x=element_text(angle = 80, hjust = 1),
+        plot.background = element_rect(color = "black", fill=NA, size=0.25))
 ```
 
-Do movie ratings in edx vary across release dates? Do rating patterns change in relation to the timing of submission? Exploratory analysis of the time trends in the data allows us to answer these questions. In figure 2.8, we see that ratings per year rise slowly at first, dating back to the early 1900s. Then yearly rating counts begin rising at an accelerated rate in the late 20th century, peaking in the mid 1990s. Since then, ratings per year decrease sharply.  
+The average rating by year of game release appears to have a time trend. Ratings held relatively constant from the 1980s to the early 1990s, peaked in the 2000s, and have declined since. Average ratings by year range from the high 60s to the mid 70s out of 100. There are few outliers in the data.  
+
 
 \begin{center}
-Figure 2.8. Number of ratings by release year
+Figure 2.5. Average ratings per year
 \end{center}
 
-```{r number of ratings by release year, fig.align = 'center', fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## create quick summary table for plot of the number of ratings by release year
-release_year_sum <- edx %>% group_by(release_year) %>%
-  summarize(n = n(), average_rating = mean(rating))
-
-## Display plot of number of ratings by release year
-ggplot(release_year_sum, aes(release_year, n)) +
-    geom_point(color = "steel blue", alpha = 0.6) +
-    geom_line(color = "steel blue") +
-    theme_classic() +
-    labs(x = "Year",
-         y = "Count") + 
-     theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
+```{r average ratings per year, fig.align = 'center', fig.width = 4, fig.height = 2.5, message=FALSE, warning=FALSE, echo=FALSE}
+## Plot the average user score by year of release
+ggplot(year_sum, aes(as.numeric(Year_of_Release), Average_user_score)) +
+  geom_point(color = "steel blue", alpha = 0.6) +
+  geom_smooth(color = "steel blue") +
+  theme_classic() +
+  labs(x = "Year",
+       y = "Rating") + 
+  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
 ```
 
-Movies released in the mid 1990s may receive the most ratings, but are they rated the highest? Figure 2.9 suggests not; from this plot of average ratings by release year, we note that movies from the 1940s and 1950s appear to garner the highest acclaim. After the mid-century period, ratings declined consistently.  
-
-\begin{center}
-Figure 2.9. Average rating by release year
-\end{center}
-
-```{r average rating by release year, fig.align = 'center', fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## Plot the average rating by release year
-ggplot(release_year_sum, aes(release_year, average_rating)) +
-    geom_point(color = "steel blue", alpha = 0.6) +
-    geom_smooth() +
-    theme_classic() +
-    labs(x = "Year",
-         y = "Rating") + 
-     theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
-```
-
-A simple linear regression model provides more information on the relationship between release year and average rating. Two models are estimated and results reported in table 2.6. Model 1 estimates the effect of the release year and squared release year on average rating; the squared term is included to account for the curved shape of average ratings by release year illustrated in figure 2.9. In model 2, a cubic term is added for comparison because the curve of average ratings by release year appears to have a point of inflection. The significant coefficients in both models indicate that release year impacts average rating, and that the impact varies over time.  
+A simple linear regression model provides more information on the relationship between release year and average rating. Two models are estimated and results reported in table 2.4. Model 1 estimates the effect of the release year and squared release year on average rating; the squared term is included to account for the non-linearity of average ratings by release year illustrated in figure 2.9. In model 2, a cubic term is added for comparison because the curve of average ratings by release year appears to have a point of inflection. The significant coefficients in both models indicate that release year impacts average rating, and that the impact varies over time.  
 
 \newpage
 
 \begin{center}
-Table 2.6. Linear models of average rating by movie release year
+Table 2.4. Linear models of average user score by game release year
 \end{center}
 
 ```{r basic linear model results, results='asis', message=FALSE, warning=FALSE, echo=FALSE}
-## Fit linear model of average rating on release year and release year squared
-fit_lm1 <- lm(average_rating ~ I(release_year^2) +
-               I(release_year), 
-             data = release_year_sum)
+## Fit linear model of average score on year of release and year of release squared
+fit_lm1 <- lm(Average_user_score ~ I(as.numeric(Year_of_Release)^2) +
+                I(as.numeric(Year_of_Release)), 
+              data = year_sum)
 
-## Fit linear model of average rating on release year, release year squared, and release year cubed
-fit_lm2 <- lm(average_rating ~ I(release_year^3) + I(release_year^2) +
-               I(release_year), 
-             data = release_year_sum)
+## Fit linear model of average rating on year of release, year of release squared, and year of release cubed
+fit_lm2 <- lm(Average_user_score ~ I(as.numeric(Year_of_Release)^3) +
+                I(as.numeric(Year_of_Release)^2) +
+                I(as.numeric(Year_of_Release)), 
+              data = year_sum)
 
 ## Create table of results for both linear models
 export_summs(fit_lm1, fit_lm2)
 ```
 
-In order to better utilize the time component of movie ratings, I add a new variable to the edx dataset to measure the time since a movie was first rated. This variable is computed as a simple subtraction of the earliest rating from a given user--movie rating. For ease of interpretation, I convert the resulting count of days into weeks via dividing by 7. Figure 2.10 shows the number of ratings since the first rating by week. Not surprisingly, rating numbers per movie peak near the time of that movie's first rating, then tend to taper off as time passes. This suggests initial excitement builds around a movie, which then abates as the movie ages and new films assume the spotlight.  
-
 \begin{center}
-Figure 2.10. Count of ratings, by week since first rating
+Note: standard errors in parentheses.
 \end{center}
 
-```{r ratings since first rating by week, fig.align = 'center', fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-## Calculate the first rating time of each movie
-first_sum <- edx %>% group_by(movieId) %>%
-  summarize(first_ratings = n(),
-            first_mu = mean(rating),
-            first_rating_time = min(rating_time))
+Games in the vg data are categorized into various genres. The distinct genres included in the dataset are listed in table 2.5. There are 12 unique genres (as well as the aforementioned "no genres listed" indicator, omitted from the table). 
 
-## Calculate the weeks elapsed since first rating
-edx <- edx %>% left_join(first_sum, by = "movieId")
-edx <- edx %>%
-  mutate(weeks_elapsed = as.numeric(round((rating_time - first_rating_time)/7,0)))
-
-## Create a summary table grouping by weeks elapsed
-weeks_elapsed_sum <- edx %>% group_by(weeks_elapsed) %>%
-  summarize(n_weeks_elapsed = n(),
-            average_rating = mean(rating))
-
-## Plot ratings count by weeks elapsed since first rating
-ggplot(weeks_elapsed_sum, aes(weeks_elapsed, n_weeks_elapsed)) +
-    geom_point(color = "steel blue", alpha = 0.6) +
-    geom_line(color = "steel blue") +
-    theme_classic() +
-    labs(x = "Weeks since first rating",
-         y = "Count") + 
-     theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
-```
-
-Figure 2.11 plots average ratings by time in weeks since a movie's first rating was submitted. The firgure shows that after an initial ratings bump (presumably during a period of buzz surrounding a newly released film), viewers tend to cool on movies and ratings decline slowly. As movies age since their first rating, average ratings step upward, perhaps due to nostalgia around the 3-year mark after release. Following that upward jump is another slow and steady average ratings decline. Years after the initial rating, average ratings increase substantially, but numbers of ratings are small; one could speculate that the cause is a subset of users who watch old films reverently.  
-
-\begin{center}
-Figure 2.11. Average rating, by week since first rating
-\end{center}
-
-```{r average rating by week since first rating, fig.align = 'center', fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-
-## Plot average rating by weeks elapsed since first rating
-ggplot(weeks_elapsed_sum, aes(weeks_elapsed, average_rating)) +
-    geom_point(color = "steel blue", alpha = 0.6) +
-    geom_line(color = "steel blue") +
-    theme_classic() +
-    labs(x = "Weeks since first rating",
-         y = "Average rating") + 
-     theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
-```
-
-Movies in the edx data are categorized into various genres. The distinct genres included in the dataset are listed in table 2.7. There are 19 unique genres (as well as the aforementioned "no genres listed" indicator). Notably, as demonstrated previously, a given movie can have more than one associated genre.    
-
-```{r edx unique genre list, message=FALSE, warning=FALSE, echo=FALSE}
-## Create vector of genres in edx
-genres <- str_replace(edx$genres, "\\|.*","")
-
-## Drop duplicate genres from the vector
-genres <- genres[!duplicated(genres)]
-
-## Create a table listing the unique genres
-genres %>%
-  knitr::kable(caption = "Table 2.7. List of unique genres in edx",
-                                         col.names = "Genre",
-                                         row.names = FALSE) %>%
+```{r vg genre statistics, message=FALSE, warning=FALSE, echo=FALSE}
+## Create and display a table describing the genres in vg
+genres_sum <- vg %>% filter(Genre != "") %>% group_by(Genre) %>%
+  summarize(Count = n(),
+            User_mean = mean(User_Score),
+            Critic_mean = mean(Critic_Score))
+genres_sum %>%
+  knitr::kable(caption = "Table 2.5. Statistics by genres in vg",
+             digits = 2,
+             row.names = FALSE) %>%
   kable_styling(font_size = 10, position = "center",
                 latex_options = c("HOLD_position"))
 ```
 
-Table 2.8 displays the results of aggregating the most commonly mentioned genres in the edx data, listing in addition the average rating associated with movies of those genres. The most common film category is drama, representing nearly 4 million user--film observations in the set. The table demonstrates that ratings vary across genres, with drama films rating above action films by 0.25, on average.  
 
-```{r edx most common genres, message=FALSE, warning=FALSE, echo=FALSE}
-## Calculate the number of movies per genre
-n_genres <- sapply(genres, function(g){
-  index <- str_which(edx$genres, g)
-    length(edx$rating[index])
-    
-})
-
-## Calculate the average rating by genre
-genres_rating <- sapply(genres, function(g){
-  index <- str_which(edx$genres, g) 
-  mean(edx$rating[index], na.rm = T)
-})
-
-## Create summary table by genres
-genres_sum <- data.frame(Genre = genres, 
-                         Movies = n_genres,
-                         "Average rating" = genres_rating,
-                         check.names = FALSE)
-
-## Display summary table by genres
-genres_sum %>% arrange(desc(Movies)) %>% slice(1:5) %>%
-  knitr::kable(caption = "Table 2.8. Most common genres in edx",
-                                         digits = 2,
-                                         row.names = FALSE) %>%
-  kable_styling(font_size = 10, position = "center",
-                latex_options = c("HOLD_position"))
-```
-
-Film noir movies are the highest rated on average among the edx genres. Figure 2.12 shows they rate close to 4.0 on average. Conversely, the lowest rated films on average belong to the horror genre. The figure provides further evidence that ratings vary by genre.  
+Role-playing games are the highest rated on average among the vg genres. Figure 2.6 shows they rate above 70 on average. Conversely, the lowest rated games on average belong to the sports genre. The figure provides evidence that ratings vary by genre, though minimally.  
 
 \newpage
 
 \begin{center}
-Figure 2.12. Average rating by genre
+Figure 2.6. Average user score by genre
 \end{center}
 
 ```{r average rating by genre, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
-
-## Plot average rating by genre
-colnames(genres_sum)[3] <- "average_rating"
+## Plot average user score by genre
 genres_sum %>%
   ggplot(
-     aes(x = reorder(Genre, average_rating), average_rating)) +
-     geom_col(fill = "steel blue", color = "black") +
-     theme_classic() +
-     coord_flip() +
-     labs(
-     y = "Average rating",
-     x = "Genres") + 
-     theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
+    aes(x = reorder(Genre, User_mean), User_mean)) +
+  geom_col(fill = "steel blue", color = "black") +
+  theme_classic() +
+  coord_flip() +
+  labs(
+    y = "Average user score",
+    x = "Genres") + 
+  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
 ```
 
-Do genre effects interact with user effects? To investigate, we can take a random sample of 10 users from edx and explore how they rate movies on average across genres. In figure 2.13 we see the average ratings by genre for our random sample. The average ratings and the ranking of genres differs in figure 2.13 compared to figure 2.12. This suggests that, although there may be overall favorite genres for movie watchers, certain users have distinct genre preferences. These genre preferences will help inform our final model.  
+Do genre effects interact with user effects? To investigate, we can take a random sample of 10 games from vg and explore how they are rated on average across genres. In figure 2.7 we see the average ratings by genre for our random sample. The average ratings and the ranking of genres differs in figure 2.7 compared to figure 2.6. Interestingly, the highest rated genre in figure 2.7, sports, was the lowest rated genre on average in figure 2.6. This suggests that, although there may be overall favorite genres for gamers, certain users have distinct genre preferences. These genre preferences will help inform our final model.  
 
 \begin{center}
-Figure 2.13. Average rating by genre, random sample of users
+Figure 2.7. Average score by genre, random sample of users
 \end{center}
 
 ```{r average rating by genre for a random sample, fig.align = 'center', fig.width = 4, fig.height = 3, message=FALSE, warning=FALSE, echo=FALSE}
 
-## Create list of users close to the average
-user_list <- user_sum %>% 
-  filter(user_ratings >= round(mean(user_ratings),2)-1,
-         user_ratings <= round(mean(user_ratings),2)+1) %>% 
-  select(userId, user_mu)
+## Create list of games close to the average
+game_list <- vg %>% 
+  filter(User_Score != mean(User_Score),
+         User_Score >= round(mean(User_Score),2)-1,
+         User_Score <= round(mean(User_Score),2)+1) %>% 
+  select(Name, Genre, User_Score)
 
-## Sample 10 users at random
+## Sample 10 games at random
 set.seed(1, sample.kind = "Rounding")
-user_list <- sample(user_list$userId, 10)
+game_list <- sample(game_list$Name, 10)
 
-## Create average rating figure by genre for the 10 random users
-edx_random <- edx %>%
-  filter(userId %in% user_list)
+## Create average user score figure by genre for the 10 random games
+vg_random <- vg %>%
+  filter(Name %in% game_list)
 
-## Calculate the number of movies per genre
-n_genres2 <- sapply(genres, function(g){
-  index <- str_which(edx_random$genres, g)
-    length(edx_random$rating[index])
-})
+random_genres <- vg_random %>% group_by(Genre) %>%
+  summarize(Count = n(),
+            User_mean = mean(User_Score),
+            Critic_mean = mean(Critic_Score))
 
-## Calculate the average rating by genre
-genres_rating2 <- sapply(genres, function(g){
-  index <- str_which(edx_random$genres, g) 
-  mean(edx_random$rating[index], na.rm = T)
-})
-
-## Create summary table by genres
-genres_sum2 <- data.frame(Genre = genres, 
-                         Movies = n_genres2,
-                         average_rating = genres_rating2)
-## Plot average rating by genre for random sample of 10 users
-genres_sum2 %>%
+## Plot average user score by genre for random sample of 10 users
+random_genres %>%
   ggplot(
-     aes(x = reorder(Genre, average_rating), average_rating)) +
-     geom_col(fill = "steel blue", color = "black") +
-     theme_classic() +
-     coord_flip() +
-     labs(
-     y = "Average rating",
-     x = "Genres") + 
-     theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
-
+    aes(x = reorder(Genre, User_mean), User_mean)) +
+  geom_col(fill = "steel blue", color = "black") +
+  theme_classic() +
+  coord_flip() +
+  labs(
+    y = "Average user score",
+    x = "Genres") + 
+  theme(plot.background = element_rect(color = "black", fill=NA, size=0.25))
 ```
 
 ## 2.1.3 Insights gained
 
-The exercise of data exploration and visualization resulted in several useful insights. Ratings data are unbalanced---a large number of movies have very few ratings. As the number of times a movie has been rated rises, average ratings increase and rating variability declines. Despite users submitting a large number of overall 5.0 ratings, very few movies averaged a rating of 4.5 or higher.  
-
-Substantial user-to-user variation is present in the edx data. Certain users rate very few movies, while others submitted thousands of ratings. User rating averages varied widely among those with few ratings. This variability was not observed for users with many ratings. In addition, very high and very low user--rating averages were rare, especially in light of how many 5.0 ratings were submitted overall.  
-
-The ratings of movies are correlated with their release years. After a movie receives its first rating, other ratings pour in---but not for long, and soon rating numbers decrease. Average ratings step upward, then steadily decrease with age, until years later when movies experience an apparent critical resurgence.  
-
-Finally, genres matter for movie ratings overall. More movies from certain genres---drama, for example---were reviewed in our dataset. Based on average rating, users preferred some genres over others. These genre effects seem to vary on a user-to-user basis.  
+The exercise of data exploration and visualization resulted in several useful insights. Ratings data are unbalanced---a large number of games have very few ratings. Substantial publisher to publisher variation is present in the vg data. Certain publishers release games that are rated higher than their counterparts. The ratings of games are correlated with their release years. Finally, genres matter for game video game ratings overall overall.  
 
 # 2.2 Modeling approach
 
-My approach to developing the model is to begin with a naive attempt using a simple average. From there, I will tune my model, adding predictors incrementally in an effort to minimize RMSE. I plan to use predictors based on the insights detailed above, to ultimately produce a model that accounts for movie, user, time, and genre effects on ratings.
+My approach to developing the model is to begin with a naive attempt using a simple average. From there, I will tune my model, adding predictors incrementally in an effort to minimize RMSE. I plan to use predictors based on the insights detailed above, to ultimately produce a model that accounts for various unique characteristics of each game.
 
-Values of the key dependent variable, ratings, in edx are discrete. In other words ratings values are measured by counting. One improvement in my model is that it will allow for ratings predictions that are continuous. The result should be a more sensitive measure and, by extension, a lower RMSE.
+Values of the key dependent variable, ratings, in vg are discrete. In other words ratings values are measured by counting. One improvement in my model is that it will allow for ratings predictions that are continuous. The result should be a more sensitive measure and, by extension, a lower RMSE.
 
 # 3.0 Results
 
-In this section I develop my model to minimize the RMSE of predicted movie ratings and actual ratings in the edx dataset, then present the results of my model. As previously described, I adopt an iterative approach, adding predictors to the model one-by-one.  
+In this section I develop my model to minimize the RMSE of predicted game ratings and actual ratings in the vg dataset, then present the results of my model. As previously described, I adopt an iterative approach, adding predictors to the model one-by-one.  
 
 # 3.1 Model results
 
-The most straightforward model for a movie recommendation system would simply predict the same rating for each movie, not taking into account unique characteristics of the movie, the user rating it, or the time in which the rating was submitted. Such a model would use the average to minimize the RMSE. With the edx data, a model using only a simple average of movie ratings results in a RMSE of 1.06, as shown in table 3.1.  
+The most straightforward model for a video game recommendation system would simply predict the same rating for each game, not taking into account unique characteristics of the game, its sales numbers, or the year the game was released. Such a model would use the average to minimize the RMSE. With the vg data, a model using only a simple average of game ratings results in a RMSE of 9.9250, as shown in table 3.1.  
 
 ```{r naive model, message=FALSE, warning=FALSE, echo=FALSE}
-## Compute RMSE using the average of all ratings
+## Compute RMSE using the average of all user scores
+vg <- vg %>% mutate(mu_user = mean(User_Score))
+
 rmses <- data_frame(method = "Only estimate is the average",
-                    RMSE = RMSE(mean(edx$rating), edx$rating))
+                    RMSE = RMSE(vg$mu_user, vg$User_Score))
+
 ## Create the RMSE results table
 rmses %>%
   knitr::kable(caption = "Table 3.1. RMSE by method I",
@@ -683,18 +445,22 @@ rmses %>%
                 latex_options = "HOLD_position")
 ```
 
-The RMSE of 1.06 is quite high---it would translate to regularly missing ratings predictions by more than a full point. We can refer back to table 2.1 to confirm that our current model RMSE is equal to the standard deviation of movie ratings in edx. A reasonable goal is to improve upon this RMSE. In an effort to do so, we can tweak the model so that instead of using a simple average as the estimate, we use a movie--average, *i.e.*, the average rating per movie. This will help disentangle the movie-specific effects we observed in the data (some movies are "better" than others). Table 3.2 adds a new row to report the RMSE for our movie--average model.  
+The RMSE of 9.9250 is somewhat high---it would translate to regularly missing ratings predictions by nearly 10 percentage points. We can refer back to table 2.1 to confirm that our current model RMSE is equal to the standard deviation of user scores in vg. A reasonable goal is to improve upon this RMSE. In an effort to do so, we can tweak the model so that instead of using a simple average as the estimate, we incorporate the critic score average. Table 3.2 adds a new row to report the RMSE for our critic model.  
 
-```{r movie average model, message=FALSE, warning=FALSE, echo=FALSE}
-## Add movie--average to edx
-movie_sum <- edx %>% group_by(movieId) %>%
-  summarize(mu_movie = mean(rating))
+```{r critic-specific model, message=FALSE, warning=FALSE, echo=FALSE}
+## Add critic--average effect to vg
+b_c_sum <- vg %>% mutate(yhat = User_Score - mu_user) %>%
+  group_by(Critic_Score) %>%
+  summarize(b_c = mean(yhat))
 
-edx <- left_join(edx, movie_sum, by = "movieId")
+vg <- left_join(vg, b_c_sum, by = "Critic_Score") %>%
+  mutate(mu_c = mu_user + b_c)
+
 ## Append the row to the RMSE results table
 rmses <- bind_rows(rmses,
-                   data_frame(method = "Add movie–average effect",
-                    RMSE = RMSE(edx$mu_movie, edx$rating)))
+                   data_frame(method = "Add critic–specific effect",
+                              RMSE = RMSE(vg$mu_c, vg$User_Score)))
+
 ## Display the RMSE results table
 rmses %>%
   knitr::kable(caption = "Table 3.2. RMSE by method II",
@@ -704,20 +470,22 @@ rmses %>%
                 latex_options = "HOLD_position")
 ```
 
-We see that our updated model has improved RMSE, lowering it to 0.94. The next step is to account for user-specific effects. To compute the user-specific effect for a given movie, we subtract the movie--average rating from each user--movie rating (*i.e.*, row in edx). This provides a measure of how each user differed from the average rating for each movie. Table 3.3 adds another new row to show the results of the model incorporating an estimate for the user effect.  
+We see that our updated model has improved RMSE, lowering it to 8.4753. The next step is to account for platform-specific effects. Table 3.3 adds another new row to show the results of the model incorporating an estimate for the platform effect.  
 
-```{r user average model, message=FALSE, warning=FALSE, echo=FALSE}
-## Add user--average to edx
-b_u_sum <- edx %>% mutate(yhat = rating - mu_movie) %>%
-  group_by(userId) %>%
-  summarize(b_u = mean(yhat))
+```{r platform model, message=FALSE, warning=FALSE, echo=FALSE}
+## Add platform effect to vg
+b_p_sum <- vg %>% mutate(error = User_Score - mu_c) %>%
+  group_by(Platform) %>%
+  summarize(b_p = mean(error))
 
-edx <- left_join(edx, b_u_sum, by = "userId") %>%
-  mutate(mu_movie_user = mu_movie + b_u)
+vg <- left_join(vg, b_p_sum, by = "Platform") %>%
+  mutate(mu_c_p = mu_c + b_p)
+
 ## Append the row to the RMSE results table
 rmses <- bind_rows(rmses,
-                   data_frame(method = "Add user–specific effect",
-                    RMSE = RMSE(edx$mu_movie_user, edx$rating)))
+                   data_frame(method = "Add platform effect",
+                              RMSE = RMSE(vg$mu_c_p, vg$User_Score)))
+
 ## Display the RMSE results table
 rmses %>%
   knitr::kable(caption = "Table 3.3. RMSE by method III",
@@ -727,26 +495,21 @@ rmses %>%
                 latex_options = "HOLD_position")
 ```
 
-Incorporating an estimate for the effect of users improves our model performance once again. Now we need to address the variation of ratings over time in our data. We will add a time effect using the variable of weeks since a movie's first rating, the result of our data cleaning and exploratory data analysis. The resulting model RMSE is provided in table 3.4.  
+Incorporating an estimate for the effect of platforms improves our model performance once again. Now we need to address the variation of ratings over time in our data. We will add a time effect using the variable of a game's release year. The resulting model RMSE is provided in table 3.4.  
 
 ```{r time model, message=FALSE, warning=FALSE, echo=FALSE}
-## Add time effect to edx
-b_t_sum <- edx %>% mutate(error = rating - mu_movie_user) %>%
-  group_by(weeks_elapsed) %>%
-  summarize(b_t = mean(error))
+## Add year effect to vg
+b_y_sum <- vg %>% mutate(error = mu_c - mu_c_p) %>%
+  group_by(Year_of_Release) %>%
+  summarize(b_y = mean(error))
 
-edx <- left_join(edx, b_t_sum, by = "weeks_elapsed") 
-
-## Convert NAs to 0
-edx$b_t[is.na(edx$b_t)] <- 0
-
-edx <- edx %>%
-  mutate(mu_movie_user_time = mu_movie_user + b_t)
+vg <- left_join(vg, b_y_sum, by = "Year_of_Release") %>%
+  mutate(mu_c_p_y = mu_c_p + b_y)
 
 ## Append the row to the RMSE results table
 rmses <- bind_rows(rmses,
-                   data_frame(method = "Add time effect",
-                    RMSE = RMSE(edx$mu_movie_user_time, edx$rating)))
+                   data_frame(method = "Add year effect",
+                              RMSE = RMSE(vg$mu_c_p_y, vg$User_Score)))
 
 ## Display the RMSE results table
 rmses %>%
@@ -757,23 +520,22 @@ rmses %>%
                 latex_options = "HOLD_position")
 ```
 
-The measure of weeks since first rating represents an improvement to the model, decreasing RMSE from 0.8567 to 0.8562. The logical final step to round out the model is adding a treatment for genres. The result of incorporating genre effects into the model is depicted in Table 3.5.  
+The measure of release year interestingly represents an setback to the model, increasing RMSE from 8.1933 to 8.4003. The logical final step to round out the model is adding a treatment for game sales. The result of incorporating sales effects into the model is depicted in Table 3.5.  
 
-```{r genre model, message=FALSE, warning=FALSE, echo=FALSE}
-## Add genre effect to edx
-b_g_sum <- edx %>% mutate(error = rating - mu_movie_user_time) %>%
-  group_by(genres) %>%
-  summarize(b_g = mean(error))
+```{r sales model, message=FALSE, warning=FALSE, echo=FALSE}
+## Add sales effect to vg
+b_s_sum <- vg %>% mutate(error = User_Score - mu_c_p_y) %>%
+  group_by(Global_Sales) %>%
+  summarize(b_s = mean(error))
 
-edx <- left_join(edx, b_g_sum, by = "genres") 
-
-edx <- edx %>%
-  mutate(mu_movie_user_time_genres = mu_movie_user_time + b_g)
+vg <- left_join(vg, b_s_sum, by = "Global_Sales") %>%
+  mutate(mu_c_p_y_s = mu_c_p_y + b_s)
 
 ## Append the row to the RMSE results table
 rmses <- bind_rows(rmses,
-                   data_frame(method = "Add genre effect",
-                    RMSE = RMSE(edx$mu_movie_user_time_genres, edx$rating)))
+                   data_frame(method = "Add sales effect",
+                              RMSE = RMSE(vg$mu_c_p_y_s, vg$User_Score)))
+
 ## Display the RMSE results table
 rmses %>%
   knitr::kable(caption = "Table 3.5. RMSE by method V",
@@ -783,75 +545,108 @@ rmses %>%
                 latex_options = "HOLD_position")
 ```
 
-With all variables included, our model results in an RMSE of 0.8559 on the edx ratings data. The culmination of the project is to evaluate the model's performance on the final hold-out test set.  
+Finally, we model the effect of publishers on user ratings. Certain publishers could have a knack for making more popular, better-received games. Table 3.6 reveals these results and the RMSE decrease associated with added publisher controls.
 
-# 3.2 Model performance
+```{r publisher model, message=FALSE, warning=FALSE, echo=FALSE}
+## Add publisher effect to vg
+b_pub_sum <- vg %>% mutate(error = User_Score - mu_c_p_y_s) %>%
+  group_by(Publisher) %>%
+  summarize(b_pub = mean(error))
 
-The first step of evaluating the final model on the validation dataset is to repeat our data cleaning procedure in order to get the measure of weeks since a movie's first rating. Then, we will append columns for the four final model effects---movie, user, time, and genre. Finally, we will calculate RMSE, measuring success by whether the value is below 0.8649.  
+vg <- left_join(vg, b_pub_sum, by = "Publisher") %>%
+  mutate(mu_c_p_y_s_pub = mu_c_p_y_s + b_pub)
 
-Before performing the final evaluation, we need to address not applicable (NA) values in the time variable predictor appended to the validation set. Table 3.6 reveals that the user and genre effect columns do not contain NAs, but the column containing measures of time in weeks since a movie's first rating does. To deal with these, I convert each NA to the average value of the time effect in the validation set.  
+## Append the row to the RMSE results table
+rmses <- bind_rows(rmses,
+                   data_frame(method = "Add publisher--effect",
+                              RMSE = RMSE(vg$mu_c_p_y_s_pub, vg$User_Score)))
 
-```{r final model preparation, message=FALSE, warning=FALSE, echo=FALSE}
-## Update validation with timestamp converted to date format
-validation <- validation %>% 
-  mutate(rating_time = as.Date(as.POSIXct(timestamp, origin = "1970-01-01 00:00:00",tz = "GMT"))) %>% 
-  mutate(rating_year = year(rating_time)) %>%
-  select(-timestamp)
-
-## Calculate the weeks elapsed
-validation <- validation %>% left_join(first_sum, by = "movieId")
-validation <- validation %>%
-  mutate(weeks_elapsed = as.numeric(round((rating_time - first_rating_time)/7,0)))
-
-## Append effects to validation
-validation <- validation %>% left_join(b_u_sum, by = "userId") %>%
-  left_join(b_t_sum, by = "weeks_elapsed") %>%
-  left_join(b_g_sum, by = "genres")%>%
-  left_join(movie_sum, by = "movieId")
-
-## Check for NAs in validation set by displaying a table
-knitr::kable(data.frame(NAs = colSums(is.na(validation[,12:14]))),
-       caption = "Table 3.6. Check for NA values in validation set") %>% 
-  kable_styling(font_size = 10, position = "center",
-                latex_options = "HOLD_position")
-```
-
-With the NA values converted, we can evaluate the final model. Results are shown in table 3.7.  
-
-```{r final model evaluation, message=FALSE, warning=FALSE, echo=FALSE}
-## Convert NAs to mean of time effect in validation
-validation$b_t[is.na(validation$b_t)] <- mean(validation$b_t, na.rm = T)
-
-## Combine effects for final predicted ratings
-validation <- validation %>%
-  mutate(predicted_rating = mu_movie + b_u + b_t + b_g)
-
-## Create and display the final RMSE table
-data_frame(method = "Movie, user, time, genre effect model",
-                    RMSE = RMSE(validation$rating, validation$predicted_rating)) %>%
-  knitr::kable(caption = "Table 3.7. Final RMSE evaluation",
+## Display the RMSE results table
+rmses %>%
+  knitr::kable(caption = "Table 3.6. RMSE by method VI",
                row.names = FALSE,
                digits = 4) %>%
   kable_styling(font_size = 10, position = "center",
                 latex_options = "HOLD_position")
 ```
 
-My model's final RMSE is 0.8645. The effects included in the model allow us to make predictions that are generally within the target of 0.8649, meaning we can generally make predictions of movie ratings that are suitably close to the genuine values observed in the data.
+With all variables included, our model results in an RMSE of 7.9849 on the vg ratings data. The culmination of the project is to evaluate the model's performance on the final hold-out test set.  
+
+# 3.2 Model performance
+
+The first step of evaluating the final model on the validation dataset is to repeat our data cleaning procedure in order to get the measure of user ratings into a numerical value and scaled with critical ratings. Then, we will append columns for the final model effects---critic, platform, sales, and publisher. Finally, we will calculate RMSE, measuring success by minimizing its value.  
+
+Before performing the final evaluation, we need to address not applicable (NA) values in the variable predictors appended to the validation set. Table 3.7 lists these. To deal with them, I convert each NA to the average value of the corresponding effect in the validation set.  
+
+```{r final model preparation, message=FALSE, warning=FALSE, echo=FALSE}
+## Make User_Score numeric in validation
+validation <- transform(validation, User_Score = as.numeric(User_Score))
+
+## Convert User_Score NAs to mean of User_Score in validation
+validation$User_Score[is.na(validation$User_Score)] <- mean(validation$User_Score, na.rm = T)
+
+## Update vg with user score multiplied by 10 to scale to critic score
+validation <- validation %>% 
+  mutate(User_Score = User_Score*10)
+
+## Add mu_user to validation
+validation <- validation %>% mutate(mu_user = rep(vg$mu_user[1],times = nrow(validation)))
+
+## Append effects to validation
+validation <- validation %>%
+  left_join(b_c_sum, by = "Critic_Score") %>%
+  left_join(b_p_sum, by = "Platform") %>%
+  left_join(b_y_sum, by = "Year_of_Release") %>%
+  left_join(b_s_sum, by = "Global_Sales") %>%
+  left_join(b_pub_sum, by = "Publisher")
+
+## Check for NAs in validation set by displaying a table
+knitr::kable(data.frame(NAs = colSums(is.na(validation[,17:21]))),
+             caption = "Table 3.7. Check for NA values in validation set") %>% 
+  kable_styling(font_size = 10, position = "center",
+                latex_options = "HOLD_position")
+```
+
+With the NA values converted, we can evaluate the final model. Results are shown in table 3.8.  
+
+```{r final model evaluation, message=FALSE, warning=FALSE, echo=FALSE}
+## Convert NAs to mean of corresponding effects in validation
+validation$b_c[is.na(validation$b_c)] <- mean(validation$b_c, na.rm = T)
+validation$b_s[is.na(validation$b_s)] <- mean(validation$b_s, na.rm = T)
+validation$b_pub[is.na(validation$b_pub)] <- mean(validation$b_pub, na.rm = T)
+
+## Combine effects for final predicted ratings
+validation <- validation %>%
+  mutate(predicted_rating = mu_user + b_c + b_p + b_s + b_pub)
+
+## Create and display the final RMSE table
+data_frame(method = "Critic-average, platform, sales, publisher model",
+           RMSE = RMSE(validation$User_Score, validation$predicted_rating)) %>%
+  knitr::kable(caption = "Table 3.8. Final RMSE evaluation",
+               row.names = FALSE,
+               digits = 4) %>%
+  kable_styling(font_size = 10, position = "center",
+                latex_options = "HOLD_position")
+```
+
+My model's final RMSE is 11.0988. The effects included in the model allow us to make predictions that are reasonably close to a given user score out of 100.
 
 # 4.0 Conclusion
 
-This project involved making predictions on movie ratings using machine learning techniques. The contribution of this work is demonstrating how simple methods can result in strong predictive power on variables in large datasets. This is useful for individuals seeking entertainment---movies, for example. But there are many other potential practical applications for the techniques used in this analysis. I will discuss those after summarizing the report and addressing the limitations of this work.  
+This project involved making predictions on video game user scores using machine learning techniques. The contribution of this work is demonstrating how simple methods can result in strong predictive power on variables in large datasets. Individuals who want to entertain themselves with video games could find this study of interest. But there are many other potential practical applications for the techniques used in this analysis. I will discuss those after summarizing the report and addressing the limitations of this work.  
 
 # 4.1 Report summary
 
-With the aim of developing an accurate movie recommendation model, I performed analysis on a large dataset. The data were millions of movie ratings with corresponding information on users, time, and genre. My efforts involved summarizing the data, cleaning the data, performing exploratory analysis and data visualization. The result was added insight which, in turn, I put to use while considering strategies for modeling movie ratings. I developed my model, electing for an iterative process to drive RMSE lower in increments. Adding in effects by movie, user, time, and genre allowed my model to account for the rich variability observed across all. Ultimately, I was able to achieve the goal of an appropriately low RMSE when evaluating my model's predictions compared to the ratings in the final hold-out test set.  
+With the aim of developing an accurate video game recommendation model, I performed analysis on a large dataset. The data were thousands of video game ratings with corresponding information on number of users giving ratings, critical reception, release time, genre, sales figures, and publishers. My efforts involved summarizing the data, cleaning the data, performing exploratory analysis and data visualization. The result was added insight which, in turn, I put to use while considering strategies for modeling video game ratings. I developed my model, electing for an iterative process to drive RMSE lower in increments. Adding in effects by critic score, genre, platform, publisher, and sales allowed my model to account for the rich variability observed across all. Ultimately, I was able to achieve the goal of an appropriately low RMSE when evaluating my model's predictions compared to the ratings in the final hold-out test set.  
 
 # 4.2 Limitations
 
-My project, while successful, is not without drawbacks. Movies with low rating counts confound predictions that use average rating as a benchmark, such as mine. A similar case can be made for users with low rating counts. Aside from that, my analysis uncovered some odd patterns in the data---for example, average movie ratings increasing substantially once roughly 600 weeks have passed since the first rating. This is an example of a phenomenon that is difficult to explain, and perhaps inadequately addressed in my analysis. Another possible limitation of this work involves the handling of NA values in the validation set. I opted to convert those to the column average for simplicity---it was straightforward. But it is possible that closer investigation would uncover a better way to deal with the NAs.  
+My project, while successful, is not without drawbacks. In large part my analysis was confounded by many missing user-rating values. The same was true for ratings by critics. Genre information for the video games present in the dataset was lacking, and future data collection should prioritize listing multiple genres per game. Additionally, a crucial missing data component was unique user identifiers---being able to disentangle user-specific individual effects would likely have improved my model considerably.
+
+Aside from that, my analysis uncovered some odd patterns in the data---for example, average game ratings increasing substantially once roughly 600 weeks have passed since the first rating. This is an example of a phenomenon that is difficult to explain, and perhaps inadequately addressed in my analysis. Another possible limitation of this work involves the handling of NA values in the vg and validation sets. I opted to convert those to the column average because it was a simple choice. But it is possible that closer investigation would uncover a better way to deal with the NAs. Regardless, the large number of NAs, particularly for the key dependent variable of user scores, was a detriment to my study.  
 
 # 4.3 Future work
 
-Future analysis would benefit from improved data. More granular genre categories could be one improvement, as there are likely more than 19 unique genres that are informative with respect to movies. Other improvements to the dataset could come by incentivizing users to rate more movies; the large number of users who rated comparatively few movies could be providing much more predictive power. Finally, it is likely that new or more advanced modeling techniques could push the RMSE down further. I met the target goal, but there is likely room for improvement in future studies.
+Future analysis would benefit from improved data. Even beyond what I mentioned in the previous section, there are likely more than 12 unique genres that are informative with respect to video games. In addition, it is likely that new or more advanced modeling techniques could push the RMSE down further. I am satisfied with the predictive power of my recommendation algorithm, but there is likely room for improvement in future studies.
 
-It is easy to imagine applications of this work to areas outside of movie recommendations. Many everyday activities---shopping, food away from home, hotels, etc.---operate on rating systems. A natural extension of the work in this report would be predicting values users place on those experiences. This could result in better understanding of how people spend their time, which has implications not only for lifestyles but also policy. Future work would do well to explore this.
+It is easy to imagine applications of this work to areas outside of video recommendations. For example, a game recommendation system would dovetail nicely with this analysis. Other natural extension of this work could apply to shopping or eating at restaurants. Models such as mine could play a role in better understanding how people enjoy leisure time; this has both lifestyle and policy implications. Future studies should focus on these important concepts.
